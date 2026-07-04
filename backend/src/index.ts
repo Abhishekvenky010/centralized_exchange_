@@ -6,11 +6,17 @@ import express, {
 } from "express";
 import { env } from "./utils/env.js";
 import {appRouter} from "./routes/index.js";
-const app = express();
+import { connectRedis, listenForEngineResponses } from "./utils/engine-client.js";
+
+
+await connectRedis(); 
+void listenForEngineResponses(); 
+const app = express(); 
 
 app.use(cors());
 app.use(express.json());
 app.use(appRouter);
+ 
 
 app.get("/health", async (_req, res) => {
   res.json({ ok: true });

@@ -11,7 +11,7 @@ export interface RestingOrder {
   orderId: string;
   userId: string;
   side: Side;
-  type: "limit";
+  type: OrderType;
   symbol: string;
   price: number;
   qty: number;
