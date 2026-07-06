@@ -1,17 +1,19 @@
+import type Decimal from "decimal.js";
+
 export type Side = "buy" | "sell";
 export type OrderType = "market" | "limit";
 export type OrderStatus = "open" | "partially_filled" | "filled" | "cancelled";
 
 export interface Balance {
-  available: number;
-  locked: number;
+  available: Decimal;
+  locked: Decimal;
 }
 
 export interface RestingOrder {
   orderId: string;
   userId: string;
   side: Side;
-  type: OrderType;
+  type: "limit";
   symbol: string;
   price: number;
   qty: number;
@@ -58,18 +60,34 @@ export interface CreateOrderInput {
   qty: number;
 }
 
-export interface DepthLevel {
-  price: number;
-  qty: number;
+export interface DepthUpdate {
+  s: string;
+  b: [string, string][];
+  a: [string, string][];
+  U: number;
+  u: number;
+  T: number;
 }
 
-export interface DepthResponse {
+export type DepthLevel = [string, string];
+
+export type DepthResponse = {
   symbol: string;
   bids: DepthLevel[];
   asks: DepthLevel[];
+  lastUpdateId: number;
+};
+
+export interface DepthDelta {
+  bids: Set<number>;
+  asks: Set<number>;
 }
 
 export const BALANCES = new Map<string, Record<string, Balance>>();
 export const ORDERBOOKS = new Map<string, OrderBook>();
 export const ORDERS = new Map<string, OrderRecord>();
 export const FILLS: Fill[] = [];
+
+export const ENGINE_STATE = {
+  lastUpdateId: 0,
+};

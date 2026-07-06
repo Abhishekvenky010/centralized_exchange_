@@ -1,0 +1,601 @@
+import { beforeEach, describe, expect, test } from "bun:test";
+import { BALANCES, ORDERBOOKS, ORDERS } from "../src/store/exchange-store";
+
+import { handleLimitOrder } from "../src/orders/handleLimitOrder";
+import Decimal from "decimal.js";
+
+describe("Limit Order Matching", () => {
+  beforeEach(() => {
+    BALANCES.clear();
+    ORDERBOOKS.clear();
+    ORDERS.clear();
+  });
+
+  test("limit buy order should remain open when buy price is below best ask", () => {
+    // Seller has BTC
+    BALANCES.set("seller", {
+      BTC: {
+        available: new Decimal(5),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Buyer has USD
+    BALANCES.set("buyer", {
+      USD: {
+        available: new Decimal(1000),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Existing ask: 5 BTC @ 200
+    handleLimitOrder({
+      userId: "seller",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 200,
+      qty: 5,
+    });
+
+    // Buy 5 BTC @ 100
+    const result = handleLimitOrder({
+      userId: "buyer",
+      type: "limit",
+      side: "buy",
+      symbol: "BTC",
+      price: 100,
+      qty: 5,
+    });
+
+    expect(result.status).toBe("open");
+    expect(result.filledQty).toBe(0);
+    expect(result.averagePrice).toBeNull();
+    expect(result.fills).toHaveLength(0);
+  });
+
+  test("limit buy order should fully match when buy price equals best ask", () => {
+    // Seller has BTC
+    BALANCES.set("seller", {
+      BTC: {
+        available: new Decimal(5),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Buyer has USD
+    BALANCES.set("buyer", {
+      USD: {
+        available: new Decimal(1000),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Existing ask: 5 BTC @ 100
+    handleLimitOrder({
+      userId: "seller",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 100,
+      qty: 5,
+    });
+
+    // Buy 5 BTC @ 100
+    const result = handleLimitOrder({
+      userId: "buyer",
+      type: "limit",
+      side: "buy",
+      symbol: "BTC",
+      price: 100,
+      qty: 5,
+    });
+
+    expect(result.status).toBe("filled");
+    expect(result.filledQty).toBe(5);
+    expect(result.averagePrice).toBe(100);
+
+    expect(result.fills).toHaveLength(1);
+
+    expect(result.fills[0]).toMatchObject({
+      qty: 5,
+      price: 100,
+    });
+  });
+
+  test("limit buy order with better price should execute at resting ask price", () => {
+    // Seller owns 5 BTC
+    BALANCES.set("seller", {
+      BTC: {
+        available: new Decimal(5),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Buyer has enough USD
+    BALANCES.set("buyer", {
+      USD: {
+        available: new Decimal(1000),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Existing ask: Sell 5 BTC @100
+    handleLimitOrder({
+      userId: "seller",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 100,
+      qty: 5,
+    });
+
+    // Incoming buy: Buy 5 BTC @200
+    const result = handleLimitOrder({
+      userId: "buyer",
+      type: "limit",
+      side: "buy",
+      symbol: "BTC",
+      price: 200,
+      qty: 5,
+    });
+
+    expect(result.status).toBe("filled");
+    expect(result.filledQty).toBe(5);
+
+    // Trade should happen at resting order price
+    expect(result.averagePrice).toBe(100);
+
+    expect(result.fills).toHaveLength(1);
+
+    expect(result.fills[0]).toMatchObject({
+      price: 100,
+      qty: 5,
+    });
+
+    // Seller receives USD
+    expect(BALANCES.get("seller")?.USD?.available.toNumber()).toBe(500);
+
+    // Buyer receives BTC
+    expect(BALANCES.get("buyer")?.BTC?.available.toNumber()).toBe(5);
+  });
+
+  test("limit sell order should remain open when sell price is above best bid", () => {
+    // Buyer owns USD
+    BALANCES.set("buyer", {
+      USD: {
+        available: new Decimal(1000),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Seller owns BTC
+    BALANCES.set("seller", {
+      BTC: {
+        available: new Decimal(5),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Existing bid: Buy 5 BTC @100
+    handleLimitOrder({
+      userId: "buyer",
+      type: "limit",
+      side: "buy",
+      symbol: "BTC",
+      price: 100,
+      qty: 5,
+    });
+
+    // Incoming sell: Sell 5 BTC @200
+    const result = handleLimitOrder({
+      userId: "seller",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 200,
+      qty: 5,
+    });
+
+    expect(result.status).toBe("open");
+    expect(result.filledQty).toBe(0);
+    expect(result.averagePrice).toBeNull();
+    expect(result.fills).toHaveLength(0);
+  });
+
+  test("limit sell order with better price should execute at resting bid price", () => {
+    // Buyer owns USD
+    BALANCES.set("buyer", {
+      USD: {
+        available: new Decimal(1000),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Seller owns BTC
+    BALANCES.set("seller", {
+      BTC: {
+        available: new Decimal(5),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Existing bid: Buy 5 BTC @200
+    handleLimitOrder({
+      userId: "buyer",
+      type: "limit",
+      side: "buy",
+      symbol: "BTC",
+      price: 200,
+      qty: 5,
+    });
+
+    // Incoming sell: Sell 5 BTC @100
+    const result = handleLimitOrder({
+      userId: "seller",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 100,
+      qty: 5,
+    });
+
+    expect(result.status).toBe("filled");
+    expect(result.filledQty).toBe(5);
+
+    // Trade should happen at the resting bid price, NOT 100
+    expect(result.averagePrice).toBe(200);
+
+    expect(result.fills).toHaveLength(1);
+
+    expect(result.fills[0]).toMatchObject({
+      price: 200,
+      qty: 5,
+    });
+  });
+
+  test("limit buy order should partially fill and rest remaining quantity on bids", () => {
+    // Seller owns 3 BTC
+    BALANCES.set("seller", {
+      BTC: {
+        available: new Decimal(3),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Buyer has enough USD
+    BALANCES.set("buyer", {
+      USD: {
+        available: new Decimal(1000),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Existing ask: Sell 3 BTC @100
+    handleLimitOrder({
+      userId: "seller",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 100,
+      qty: 3,
+    });
+
+    // Incoming buy: Buy 10 BTC @100
+    const result = handleLimitOrder({
+      userId: "buyer",
+      type: "limit",
+      side: "buy",
+      symbol: "BTC",
+      price: 100,
+      qty: 10,
+    });
+
+    expect(result.status).toBe("partially_filled");
+    expect(result.filledQty).toBe(3);
+    expect(result.averagePrice).toBe(100);
+
+    expect(result.fills).toHaveLength(1);
+
+    expect(result.fills[0]).toMatchObject({
+      price: 100,
+      qty: 3,
+    });
+
+    // Verify depth
+    const book = ORDERBOOKS.get("BTC");
+
+    expect(book?.asks).toHaveLength(0);
+
+    expect(book?.bids).toHaveLength(1);
+  });
+
+  test("limit buy order should match multiple price levels from cheapest ask first", () => {
+    // Setup sellers
+    BALANCES.set("seller1", {
+      BTC: {
+        available: new Decimal(2),
+        locked: new Decimal(0),
+      },
+    });
+
+    BALANCES.set("seller2", {
+      BTC: {
+        available: new Decimal(3),
+        locked: new Decimal(0),
+      },
+    });
+
+    BALANCES.set("seller3", {
+      BTC: {
+        available: new Decimal(5),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Buyer has enough USD
+    BALANCES.set("buyer", {
+      USD: {
+        available: new Decimal(1200),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Create asks
+    handleLimitOrder({
+      userId: "seller1",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 100,
+      qty: 2,
+    });
+
+    handleLimitOrder({
+      userId: "seller2",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 110,
+      qty: 3,
+    });
+
+    handleLimitOrder({
+      userId: "seller3",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 120,
+      qty: 5,
+    });
+
+    // Buy 10 BTC @120
+    const result = handleLimitOrder({
+      userId: "buyer",
+      type: "limit",
+      side: "buy",
+      symbol: "BTC",
+      price: 120,
+      qty: 10,
+    });
+
+    expect(result.status).toBe("filled");
+    expect(result.filledQty).toBe(10);
+
+    // Weighted average price
+    expect(result.averagePrice).toBe(113);
+
+    expect(result.fills).toHaveLength(3);
+
+    expect(result.fills[0]).toMatchObject({
+      price: 100,
+      qty: 2,
+    });
+
+    expect(result.fills[1]).toMatchObject({
+      price: 110,
+      qty: 3,
+    });
+
+    expect(result.fills[2]).toMatchObject({
+      price: 120,
+      qty: 5,
+    });
+
+    // Order book should now be empty
+    const book = ORDERBOOKS.get("BTC");
+
+    expect(book?.asks).toHaveLength(0);
+    expect(book?.bids).toHaveLength(0);
+
+    // Buyer received 10 BTC
+    expect(BALANCES.get("buyer")?.BTC?.available.toNumber()).toBe(10);
+
+    // Sellers received USD
+    expect(BALANCES.get("seller1")?.USD?.available.toNumber()).toBe(200);
+    expect(BALANCES.get("seller2")?.USD?.available.toNumber()).toBe(330);
+    expect(BALANCES.get("seller3")?.USD?.available.toNumber()).toBe(600);
+  });
+
+  test("limit buy order should not cross above allowed price", () => {
+    // Setup sellers
+    BALANCES.set("seller1", {
+      BTC: {
+        available: new Decimal(2),
+        locked: new Decimal(0),
+      },
+    });
+
+    BALANCES.set("seller2", {
+      BTC: {
+        available: new Decimal(3),
+        locked: new Decimal(0),
+      },
+    });
+
+    BALANCES.set("seller3", {
+      BTC: {
+        available: new Decimal(5),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Buyer has enough USD
+    BALANCES.set("buyer", {
+      USD: {
+        available: new Decimal(2000),
+        locked: new Decimal(0),
+      },
+    });
+
+    // Existing asks
+    handleLimitOrder({
+      userId: "seller1",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 100,
+      qty: 2,
+    });
+
+    handleLimitOrder({
+      userId: "seller2",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 110,
+      qty: 3,
+    });
+
+    handleLimitOrder({
+      userId: "seller3",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 130,
+      qty: 5,
+    });
+
+    // Incoming buy: Buy 10 BTC @110
+    const result = handleLimitOrder({
+      userId: "buyer",
+      type: "limit",
+      side: "buy",
+      symbol: "BTC",
+      price: 110,
+      qty: 10,
+    });
+
+    expect(result.status).toBe("partially_filled");
+    expect(result.filledQty).toBe(5);
+
+    // (2×100 + 3×110) / 5 = 106
+    expect(result.averagePrice).toBe(106);
+
+    expect(result.fills).toHaveLength(2);
+
+    expect(result.fills[0]).toMatchObject({
+      price: 100,
+      qty: 2,
+    });
+
+    expect(result.fills[1]).toMatchObject({
+      price: 110,
+      qty: 3,
+    });
+
+    const book = ORDERBOOKS.get("BTC");
+
+    // Remaining ask should stay
+    expect(book?.asks).toHaveLength(1);
+
+    // Remaining quantity (10 - 5 = 5) should rest on bids
+    expect(book?.bids).toHaveLength(1);
+
+    // Buyer receives 5 BTC
+    expect(BALANCES.get("buyer")?.BTC?.available.toNumber()).toBe(5);
+
+    // Sellers receive USD
+    expect(BALANCES.get("seller1")?.USD?.available.toNumber()).toBe(200);
+    expect(BALANCES.get("seller2")?.USD?.available.toNumber()).toBe(330);
+
+    // Seller3 should still have 5 BTC locked in the resting ask
+    expect(BALANCES.get("seller3")?.BTC).toEqual({
+      available: new Decimal(0),
+      locked: new Decimal(5),
+    });
+  });
+
+  test("orders at same price should match in FIFO order", () => {
+    BALANCES.set("seller1", {
+      BTC: {
+        available: new Decimal(5),
+        locked: new Decimal(0),
+      },
+    });
+
+    BALANCES.set("seller2", {
+      BTC: {
+        available: new Decimal(5),
+        locked: new Decimal(0),
+      },
+    });
+
+    BALANCES.set("buyer", {
+      USD: {
+        available: new Decimal(1000),
+        locked: new Decimal(0),
+      },
+    });
+
+    // First sell order
+    handleLimitOrder({
+      userId: "seller1",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 100,
+      qty: 5,
+    });
+
+    const firstSellOrderId: string = [...ORDERS.keys()][0]!;
+
+    // Second sell order
+    handleLimitOrder({
+      userId: "seller2",
+      type: "limit",
+      side: "sell",
+      symbol: "BTC",
+      price: 100,
+      qty: 5,
+    });
+
+    const secondSellOrderId: string = [...ORDERS.keys()][1]!;
+
+    // Buy order
+    const result = handleLimitOrder({
+      userId: "buyer",
+      type: "limit",
+      side: "buy",
+      symbol: "BTC",
+      price: 100,
+      qty: 5,
+    });
+
+    expect(result).toMatchObject({
+      status: "filled",
+      filledQty: 5,
+      averagePrice: 100,
+    });
+
+    const firstSellOrder = ORDERS.get(firstSellOrderId);
+    const secondSellOrder = ORDERS.get(secondSellOrderId);
+
+    // FIFO check
+    expect(firstSellOrder?.status).toBe("filled");
+    expect(firstSellOrder?.filledQty).toBe(5);
+
+    expect(secondSellOrder?.status).toBe("open");
+    expect(secondSellOrder?.filledQty).toBe(0);
+  });
+});
