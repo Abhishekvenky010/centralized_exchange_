@@ -1,8 +1,19 @@
 import "dotenv/config";
 import { createClient } from "redis";
-import { env } from "./utils/env.js";
+import { env } from "./utils/env.ts";
+import { handleDeposit } from "./deposits/deposit.ts";
+import { handleCreateOrder } from "./orders/handleCreateOrder.ts";
+import { getDepth } from "./depth/getDepth.ts";
+import { getUserBalance } from "./balance/getUserBalance.ts";
+import { getOrder } from "./orders/getOrder.ts";
+import { cancelOrder } from "./orders/cancelOrder.ts";
+import { persistEngineState } from "./snapshot/persistence.ts";
+import { loadEngineState } from "./snapshot/loadEngineState.ts";
+import "./marketClose/marketCloseCron.ts";
+import type { DepthUpdate } from "./store/exchange-store.ts";
 
 export type EngineCommandType =
+  | "deposit"
   | "create_order"
   | "get_depth"
   | "get_user_balance"
@@ -23,15 +34,34 @@ export interface EngineResponse {
   error?: string;
 }
 
-const brokerClient = createClient({ url: env.redisUrl }).on("error", (error) => {
-  console.error("Redis broker client error", error);
-});
+const brokerClient = createClient({ url: env.redisUrl }).on(
+  "error",
+  (error) => {
+    console.error("Redis broker client error", error);
+  },
+);
 
-const responseClient = createClient({ url: env.redisUrl }).on("error", (error) => {
-  console.error("Redis response client error", error);
-});
+const responseClient = createClient({ url: env.redisUrl }).on(
+  "error",
+  (error) => {
+    console.error("Redis response client error", error);
+  },
+);
 
-await Promise.all([brokerClient.connect(), responseClient.connect()]);
+const streamClient = createClient({ url: env.redisUrl }).on(
+  "error",
+  (error) => {
+    console.error("Redis stream client error", error);
+  },
+);
+
+await Promise.all([
+  brokerClient.connect(),
+  responseClient.connect(),
+  streamClient.connect(),
+]);
+
+await loadEngineState();
 
 // :-)) I added this just to check the flow, remove it when you start
 const DUMMY_SELL_ORDER = {
@@ -46,11 +76,49 @@ const DUMMY_SELL_ORDER = {
   status: "open",
 };
 
-async function sendResponse(responseQueue: string, response: EngineResponse): Promise<void> {
+let mutationCount = 0;
+
+async function snapshotIfNeeded() {
+  mutationCount++;
+
+  if (mutationCount % 5 !== 0) return;
+
+  console.log("Persisting engine state...");
+
+  await persistEngineState();
+
+  try {
+    await brokerClient.sendCommand(["BGSAVE"]);
+    console.log("Redis background snapshot started.");
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.includes("Background save already in progress")
+    ) {
+      console.log(
+        "Redis snapshot already in progress. Engine state is saved in Redis memory; skipping this snapshot.",
+      );
+      return;
+    }
+
+    throw error;
+  }
+}
+
+async function publishDepthUpdate(depthUpdate: DepthUpdate) {
+  await streamClient.xAdd("depth-stream", "*", {
+    payload: JSON.stringify(depthUpdate),
+  });
+}
+
+async function sendResponse(
+  responseQueue: string,
+  response: EngineResponse,
+): Promise<void> {
   await responseClient.lPush(responseQueue, JSON.stringify(response));
 }
 
-function handleEngineRequest(message: EngineRequest): unknown {
+async function handleEngineRequest(message: EngineRequest): Promise<unknown> {
   /**
    * TODO(student):
    * 1. Check _message.type.
@@ -68,23 +136,61 @@ function handleEngineRequest(message: EngineRequest): unknown {
 
   // just checking the flow, remove this when you start implementing the logic
   if (message.type === "create_order") {
-    return {
-      orderId: crypto.randomUUID(),
-      status: "filled",
-      filledQty: DUMMY_SELL_ORDER.qty,
-      averagePrice: DUMMY_SELL_ORDER.price,
-      fills: [
-        {
-          fillId: crypto.randomUUID(),
-          symbol: DUMMY_SELL_ORDER.symbol,
-          price: DUMMY_SELL_ORDER.price,
-          qty: DUMMY_SELL_ORDER.qty,
-          buyOrderId: "request-buy-order",
-          sellOrderId: DUMMY_SELL_ORDER.orderId,
-        },
-      ],
-      note: "Smoke-test response only. Students must replace this with real matching logic.",
+    const result = handleCreateOrder(message.payload);
+
+    void snapshotIfNeeded().catch((err) => {
+      console.error("Snapshot failed:", err);
+    });
+
+    return result;
+  }
+
+  if (message.type === "deposit") {
+    const result = handleDeposit(message.payload);
+
+    void snapshotIfNeeded().catch((err) => {
+      console.error("Snapshot failed:", err);
+    });
+
+    return result;
+  }
+
+  if (message.type === "get_depth") {
+    const { symbol } = message.payload as { symbol: string };
+
+    return getDepth(symbol);
+  }
+
+  if (message.type === "get_order") {
+    const { userId, orderId } = message.payload as {
+      userId: string;
+      orderId: string;
     };
+
+    return getOrder(userId, orderId);
+  }
+
+  if (message.type === "get_user_balance") {
+    const { userId } = message.payload as {
+      userId: string;
+    };
+
+    return getUserBalance(userId);
+  }
+
+  if (message.type === "cancel_order") {
+    const { userId, orderId } = message.payload as {
+      userId: string;
+      orderId: string;
+    };
+
+    const result = cancelOrder(userId, orderId);
+
+    void snapshotIfNeeded().catch((err) => {
+      console.error("Snapshot failed:", err);
+    });
+
+    return result;
   }
 
   throw new Error("TODO(student): implement this engine request type");
@@ -106,7 +212,16 @@ for (;;) {
   }
 
   try {
-    const data = handleEngineRequest(message);
+    const data = await handleEngineRequest(message);
+
+    if (data && typeof data === "object" && "depthUpdate" in data) {
+      const { depthUpdate } = data as {
+        depthUpdate: DepthUpdate;
+      };
+
+      void publishDepthUpdate(depthUpdate).catch(console.error);
+    }
+
     await sendResponse(message.responseQueue, {
       correlationId: message.correlationId,
       ok: true,
@@ -115,8 +230,8 @@ for (;;) {
   } catch (error) {
     await sendResponse(message.responseQueue, {
       correlationId: message.correlationId,
-      ok: false,
+      ok: false, 
       error: error instanceof Error ? error.message : "engine_error",
     });
   }
-} 
+}
