@@ -1,5 +1,5 @@
 import { prisma } from "../db.ts";
-import { syncOrders } from "./syncOrders.js";
+import { syncOrders } from "./syncOrders.ts";
 import { syncFills } from "./syncFills.js";
 
 export async function handleMarketClose() {
