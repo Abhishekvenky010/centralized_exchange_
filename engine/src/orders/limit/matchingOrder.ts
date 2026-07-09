@@ -1,6 +1,7 @@
 import {
   FILLS,
   type CreateOrderInput,
+  type DepthDelta,
   type Fill,
 } from "../../store/exchange-store";
 import { getOrderBook } from "../../utils/getOrderBook";
@@ -8,6 +9,7 @@ import { createFill } from "../shared/createFill";
 import { removeFilledOrders } from "../shared/removeFilledOrders";
 import { settleLimitTrade } from "./settleLimitTrade";
 import { updateMakerOrder } from "../shared/updateMakerOrder";
+import Decimal from "decimal.js";
 
 /**
  * Match an incoming limit order against
@@ -17,12 +19,14 @@ import { updateMakerOrder } from "../shared/updateMakerOrder";
 export function matchLimitOrder({
   input,
   orderId,
+  depthDelta,
 }: {
   input: CreateOrderInput;
   orderId: string;
+  depthDelta: DepthDelta;
 }) {
-  let totalTradedValue = 0;
-  let totalFilledQty = 0;
+  let totalTradedValue = new Decimal(0);
+  let totalFilledQty = new Decimal(0);
   // Get Order Book
   const book = getOrderBook(input.symbol);
 
@@ -92,6 +96,15 @@ export function matchLimitOrder({
           ? "filled"
           : "partially_filled";
 
+      // Record that this price level changed
+      if (input.side === "buy") {
+        // Incoming buy consumes asks
+        depthDelta.asks.add(price);
+      } else {
+        // Incoming sell consumes bids
+        depthDelta.bids.add(price);
+      }
+
       // create match record
       const fill = createFill({
         input,
@@ -118,8 +131,10 @@ export function matchLimitOrder({
         fill,
       });
 
-      totalTradedValue += matchedQty * price;
-      totalFilledQty += matchedQty;
+      totalTradedValue = totalTradedValue.plus(
+        new Decimal(matchedQty).mul(price),
+      );
+      totalFilledQty = totalFilledQty.plus(matchedQty);
 
       // Balance Settlement after match
       settleLimitTrade({
@@ -141,6 +156,8 @@ export function matchLimitOrder({
   return {
     remainingQty,
     fills,
-    averagePrice: totalFilledQty > 0 ? totalTradedValue / totalFilledQty : null,
+    averagePrice: totalFilledQty.gt(0)
+      ? totalTradedValue.div(totalFilledQty).toNumber()
+      : null,
   };
 }
